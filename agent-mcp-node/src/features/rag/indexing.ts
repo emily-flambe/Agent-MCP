@@ -3,7 +3,8 @@
 
 import { createHash } from 'crypto';
 import { glob } from 'glob';
-import { readFile, stat } from 'fs/promises';
+import { readFile, stat, readdir } from 'fs/promises';
+import { existsSync, statSync, readFileSync } from 'fs';
 import { join, relative } from 'path';
 import { getDbConnection, isVssLoadable } from '../../db/connection.js';
 import { generateEmbeddings } from '../../external/openai_service.js';
@@ -82,12 +83,42 @@ function getContentHash(content: string): string {
 }
 
 /**
+ * Detect git worktree directories under the project root.
+ * Worktrees have a `.git` FILE (not directory) containing "gitdir: <path>".
+ * We skip these to avoid indexing duplicate content from branch checkouts.
+ */
+async function findWorktreeDirs(projectDir: string): Promise<string[]> {
+  const worktrees: string[] = [];
+  try {
+    const entries = await readdir(projectDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const dotGitPath = join(projectDir, entry.name, '.git');
+      try {
+        // A .git FILE (not directory) means it's a worktree
+        if (existsSync(dotGitPath) && statSync(dotGitPath).isFile()) {
+          worktrees.push(entry.name);
+        }
+      } catch {
+        // Skip entries we can't stat
+      }
+    }
+  } catch (error) {
+    console.warn('Failed to scan for worktree directories:', error);
+  }
+  if (worktrees.length > 0) {
+    console.log(`🌲 Found ${worktrees.length} git worktree dirs to skip: ${worktrees.slice(0, 5).join(', ')}${worktrees.length > 5 ? ` (+${worktrees.length - 5} more)` : ''}`);
+  }
+  return worktrees;
+}
+
+/**
  * Check if a file path should be ignored
  */
 function shouldIgnorePath(filePath: string): boolean {
   const pathParts = filePath.split('/');
-  return pathParts.some(part => 
-    IGNORE_DIRS_FOR_INDEXING.includes(part) || 
+  return pathParts.some(part =>
+    IGNORE_DIRS_FOR_INDEXING.includes(part) ||
     (part.startsWith('.') && part !== '.' && part !== '..')
   );
 }
@@ -95,7 +126,7 @@ function shouldIgnorePath(filePath: string): boolean {
 /**
  * Scan for markdown files in the project directory
  */
-async function scanMarkdownFiles(projectDir: string, lastIndexedTime: string): Promise<ContentSource[]> {
+async function scanMarkdownFiles(projectDir: string, lastIndexedTime: string, worktreeDirs: string[] = []): Promise<ContentSource[]> {
   if (DISABLE_AUTO_INDEXING) {
     if (MCP_DEBUG) {
       console.log('📚 Markdown indexing disabled, skipping file scan');
@@ -105,13 +136,17 @@ async function scanMarkdownFiles(projectDir: string, lastIndexedTime: string): P
 
   const sources: ContentSource[] = [];
   const patterns = MARKDOWN_EXTENSIONS.map(ext => `**/*${ext}`);
-  
+  const ignorePatterns = [
+    ...IGNORE_DIRS_FOR_INDEXING.map(dir => `**/${dir}/**`),
+    ...worktreeDirs.map(dir => `${dir}/**`)
+  ];
+
   try {
     for (const pattern of patterns) {
-      const files = await glob(pattern, { 
+      const files = await glob(pattern, {
         cwd: projectDir,
         absolute: false,
-        ignore: IGNORE_DIRS_FOR_INDEXING.map(dir => `**/${dir}/**`)
+        ignore: ignorePatterns
       });
 
       for (const file of files) {
@@ -156,19 +191,23 @@ async function scanMarkdownFiles(projectDir: string, lastIndexedTime: string): P
 /**
  * Scan for code files in the project directory (advanced mode only)
  */
-async function scanCodeFiles(projectDir: string, lastIndexedTime: string): Promise<ContentSource[]> {
+async function scanCodeFiles(projectDir: string, lastIndexedTime: string, worktreeDirs: string[] = []): Promise<ContentSource[]> {
   if (!ADVANCED_EMBEDDINGS) {
     return [];
   }
 
   const sources: ContentSource[] = [];
-  
+  const ignorePatterns = [
+    ...IGNORE_DIRS_FOR_INDEXING.map(dir => `**/${dir}/**`),
+    ...worktreeDirs.map(dir => `${dir}/**`)
+  ];
+
   try {
     for (const extension of CODE_EXTENSIONS) {
-      const files = await glob(`**/*${extension}`, { 
+      const files = await glob(`**/*${extension}`, {
         cwd: projectDir,
         absolute: false,
-        ignore: IGNORE_DIRS_FOR_INDEXING.map(dir => `**/${dir}/**`)
+        ignore: ignorePatterns
       });
 
       for (const file of files) {
@@ -520,10 +559,13 @@ export async function runIndexingCycle(): Promise<void> {
     const lastContextTime = lastIndexed.last_indexed_context || '1970-01-01T00:00:00Z';
     const lastTaskTime = lastIndexed.last_indexed_tasks || '1970-01-01T00:00:00Z';
 
+    // Detect git worktree directories to avoid indexing duplicate content
+    const worktreeDirs = await findWorktreeDirs(projectDir);
+
     // Collect all sources that need processing
     const allSources: ContentSource[] = [
-      ...(await scanMarkdownFiles(projectDir, lastMarkdownTime)),
-      ...(await scanCodeFiles(projectDir, lastCodeTime)),
+      ...(await scanMarkdownFiles(projectDir, lastMarkdownTime, worktreeDirs)),
+      ...(await scanCodeFiles(projectDir, lastCodeTime, worktreeDirs)),
       ...scanProjectContext(lastContextTime),
       ...scanTasks(lastTaskTime)
     ];
