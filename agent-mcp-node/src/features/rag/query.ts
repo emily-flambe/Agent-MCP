@@ -99,13 +99,6 @@ export async function queryRagSystem(queryText: string, options?: RagQueryOption
  * then uses an LLM to synthesize an answer.
  */
 async function queryRagSystemSimple(queryText: string): Promise<string> {
-  // Get OpenAI client
-  const openaiClient = getOpenAIClient();
-  if (!openaiClient) {
-    console.error('RAG Query: OpenAI client is not available. Cannot process query.');
-    return 'RAG Error: OpenAI client not available. Please check server configuration and OpenAI API key.';
-  }
-
   let answer = 'An unexpected error occurred during the RAG query.';
 
   try {
@@ -320,36 +313,9 @@ async function queryRagSystemSimple(queryText: string): Promise<string> {
       }
       answer = 'No relevant information found in the project knowledge base or live data for your query.';
     } else {
-      const combinedContextStr = contextParts.join('\n\n');
-
-      // --- 5. Call Chat Completion API ---
-      const systemPromptForLlm = `You are an AI assistant answering questions about a software project. 
-Use the provided context, which may include recently updated live data (like project context keys or tasks) and information retrieved from an indexed knowledge base (like documentation or code summaries), to answer the user's query. 
-Prioritize information from the 'Live' sections if available and relevant for time-sensitive data. 
-Answer using *only* the information given in the context. If the context doesn't contain the answer, state that clearly.
-
-Be VERBOSE and comprehensive in your responses. It's better to give too much context than too little. 
-When answering, please also suggest additional context entries and queries that might be helpful for understanding this topic better.
-For example, suggest related files to examine, related project context keys to check, or follow-up questions that could provide more insight.
-Always err on the side of providing more detailed explanations and comprehensive information rather than brief responses.`;
-
-      const userMessageForLlm = `CONTEXT:\n${combinedContextStr}\n\nQUERY:\n${queryText}\n\nBased *only* on the CONTEXT provided above, please answer the QUERY.`;
-
-      if (MCP_DEBUG) {
-        console.log(`RAG Query: Combined context for LLM (approx tokens: ${currentTokenCount}):\n${combinedContextStr.substring(0, 500)}...`);
-        console.log(`RAG Query: User message for LLM:\n${userMessageForLlm.substring(0, 500)}...`);
-      }
-
-      const chatResponse = await openaiClient.chat.completions.create({
-        model: CHAT_MODEL,
-        messages: [
-          { role: 'system', content: systemPromptForLlm },
-          { role: 'user', content: userMessageForLlm }
-        ],
-        temperature: 0.4 // Increased for more diverse context discovery while maintaining accuracy
-      });
-
-      answer = chatResponse.choices[0]?.message?.content || 'No response generated';
+      // Return retrieved chunks directly — the calling LLM (Claude) is a better
+      // synthesizer than any local model. No need for a middleman LLM step.
+      answer = contextParts.join('\n\n');
     }
 
   } catch (error: any) {

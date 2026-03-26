@@ -2,7 +2,7 @@
 // Ported from Python external/openai_service.py with TypeScript implementation
 
 import OpenAI from 'openai';
-import { MCP_DEBUG } from '../core/config.js';
+import { MCP_DEBUG, PROVIDER_CONFIG } from '../core/config.js';
 import { globalState } from '../core/globals.js';
 
 /**
@@ -83,7 +83,7 @@ export function getOpenAIClient(): OpenAI | null {
  */
 export async function generateEmbeddings(
   texts: string[],
-  model: string = 'text-embedding-3-small',
+  model: string = PROVIDER_CONFIG.OPENAI_MODEL,
   dimensions?: number
 ): Promise<Array<number[] | null>> {
   const client = getOpenAIClient();
